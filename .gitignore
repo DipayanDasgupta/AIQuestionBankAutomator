@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Data & Output Files (these can get large, consider Git LFS if you must track)
+data/
+output/
+*.pdf
+*.csv
+
+# IDE specific
+.vscode/
+.idea/
