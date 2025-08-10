@@ -2,23 +2,18 @@ import os
 import pdfplumber
 import json
 import time
-import re # NEW: Import regular expressions for cleaning
+import re
 from utils import setup_database, get_db_connection, get_gemini_response
 
 RAW_PDF_DIR = os.path.join('data', 'raw_jee_materials')
 
-# NEW: Helper function to clean text before sending to the LLM
 def clean_text(text):
-    # Merge hyphenated words broken across lines
     text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
-    # Remove excessive newlines, keeping paragraph structure
     text = re.sub(r'\n\s*\n', '\n', text)
-    # Remove page numbers or headers that might confuse the model
-    text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)  # Original code had this line, restored
     return text
 
 def parse_questions_from_text(text_chunk, source_file, page_num):
-    # UPGRADED: A much more specific, few-shot prompt
     prompt = f"""
     You are an expert data extractor for educational content. Your task is to analyze the text from a single page of a JEE textbook and extract all multiple-choice questions.
 
@@ -59,7 +54,6 @@ def parse_questions_from_text(text_chunk, source_file, page_num):
     """
     
     response_text = get_gemini_response(prompt)
-    
     if not response_text:
         return []
 
@@ -69,7 +63,8 @@ def parse_questions_from_text(text_chunk, source_file, page_num):
         if start != -1 and end != -1:
             json_str = response_text[start:end+1]
             questions = json.loads(json_str)
-            if isinstance(questions, dict): return [questions]
+            if isinstance(questions, dict):
+                return [questions]
             return questions
         return []
     except json.JSONDecodeError:
@@ -80,58 +75,78 @@ def main():
     setup_database()
     conn = get_db_connection()
     cursor = conn.cursor()
-    total_questions_found = 0
+    total_questions_found_this_run = 0
 
-    # ... (rest of the main function is the same as before)
     if not os.path.exists(RAW_PDF_DIR) or not os.listdir(RAW_PDF_DIR):
         print(f"Directory {RAW_PDF_DIR} is empty. Please add your PDF materials.")
         return
 
-    for filename in os.listdir(RAW_PDF_DIR):
-        if filename.lower().endswith('.pdf'):
-            filepath = os.path.join(RAW_PDF_DIR, filename)
-            print(f"\n--- Processing PDF: {filename} ---")
-            
-            try:
-                with pdfplumber.open(filepath) as pdf:
-                    num_pages = len(pdf.pages)
-                    for i, page in enumerate(pdf.pages):
-                        page_num = i + 1
-                        print(f"  Processing Page {page_num} of {num_pages}...")
-                        page_text = page.extract_text()
+    all_pdfs = [f for f in os.listdir(RAW_PDF_DIR) if f.lower().endswith('.pdf')]
+    print(f"Found {len(all_pdfs)} PDF files to process.")
 
-                        if not page_text or len(page_text.strip()) < 100:
-                            print(f"    --> Skipping page {page_num} (not enough text).")
-                            continue
-                        
-                        # NEW: Clean the text before sending it
-                        cleaned_page_text = clean_text(page_text)
-
-                        extracted_questions = parse_questions_from_text(cleaned_page_text, filename, page_num)
-                        
-                        if extracted_questions:
-                            page_question_count = len(extracted_questions)
-                            total_questions_found += page_question_count
-                            print(f"    --> Found {page_question_count} questions.")
-                            
-                            for q in extracted_questions:
-                                if q.get('question_text'):
-                                    cursor.execute(
-                                        "INSERT INTO jee_questions (question_text, options, answer, source_file, source_page, raw_text_chunk) VALUES (?, ?, ?, ?, ?, ?)",
-                                        (q.get('question_text'), json.dumps(q.get('options')), q.get('answer'), filename, page_num, cleaned_page_text)
-                                    )
-                            conn.commit()
-                        else:
-                            print(f"    --> No questions found on this page.")
-                        
-                        print("    ...waiting 1.2 seconds...")
-                        time.sleep(1.2)
-
-            except Exception as e:
-                print(f"An error occurred while processing {filename}: {e}")
+    for filename in all_pdfs:
+        filepath = os.path.join(RAW_PDF_DIR, filename)
+        print(f"\n--- Checking PDF: {filename} ---")  # Changed to "Checking" for consistency with original
+        
+        try:
+            with pdfplumber.open(filepath) as pdf:
+                num_pages = len(pdf.pages)
                 
+                # --- NEW: EFFICIENT RESUME LOGIC ---
+                # Query the database ONCE to find the last page processed for this file.
+                cursor.execute("SELECT MAX(source_page) FROM jee_questions WHERE source_file = ?", (filename,))
+                result = cursor.fetchone()
+                
+                # If result is None or the first element is None, start from page 0.
+                last_processed_page = result[0] if result and result[0] is not None else 0
+                
+                start_page_index = last_processed_page  # pdf.pages is 0-indexed
+                
+                if start_page_index >= num_pages:
+                    print(f"\n--- PDF '{filename}' is already fully processed. Skipping. ---")
+                    continue
+                
+                print(f"  Resuming from page {start_page_index + 1} of {num_pages}.")
+                # --- END OF NEW RESUME LOGIC ---
+
+                # Modified loop to start from start_page_index
+                for i in range(start_page_index, num_pages):  # Changed from enumerate(pdf.pages)
+                    page = pdf.pages[i]  # Access page directly
+                    page_num = i + 1
+                    
+                    # Original check for processed page removed, as resume logic handles it
+                    print(f"  Processing Page {page_num}/{num_pages}...")
+                    page_text = page.extract_text()
+
+                    if not page_text or len(page_text.strip()) < 100:  # Original threshold restored
+                        print(f"    --> Skipping page {page_num} (not enough text).")
+                        continue
+                    
+                    cleaned_page_text = clean_text(page_text)
+                    extracted_questions = parse_questions_from_text(cleaned_page_text, filename, page_num)
+                    
+                    if extracted_questions:
+                        page_question_count = len(extracted_questions)
+                        total_questions_found_this_run += page_question_count
+                        print(f"    --> Found {page_question_count} questions.")
+                        for q in extracted_questions:
+                            if q.get('question_text'):
+                                cursor.execute(
+                                    "INSERT INTO jee_questions (question_text, options, answer, source_file, source_page, raw_text_chunk) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (q.get('question_text'), json.dumps(q.get('options')), q.get('answer'), filename, page_num, cleaned_page_text)
+                                )
+                        conn.commit()
+                    else:
+                        print(f"    --> No questions found on this page.")
+                    
+                    print("    ...waiting 1.2 seconds...")
+                    time.sleep(1.2)
+
+        except Exception as e:
+            print(f"An error occurred while processing {filename}: {e}")
+            
     conn.close()
-    print(f"\n--- All PDFs processed. Total questions found in this run: {total_questions_found} ---")
+    print(f"\n--- Parsing run complete. Added {total_questions_found_this_run} new questions. ---")
 
 if __name__ == "__main__":
     main()
