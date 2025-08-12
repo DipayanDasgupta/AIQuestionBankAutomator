@@ -1,10 +1,58 @@
-import sqlite3
 import os
 import time
 import google.generativeai as genai
 from dotenv import load_dotenv
+import sqlite3
 
-# --- Database Functions ---
+class GeminiAPI:
+    """A class to manage multiple API keys and rotate them."""
+    def __init__(self):
+        load_dotenv()
+        self.keys = [os.getenv(f"GEMINI_API_KEY_{i}") for i in range(1, 5) if os.getenv(f"GEMINI_API_KEY_{i}")]
+        if not self.keys:
+            raise ValueError("No GEMINI_API_KEY found in .env file. Please check your configuration.")
+        self.current_key_index = 0
+        print(f"Loaded {len(self.keys)} Gemini API keys.")
+
+    def get_response(self, prompt_text):
+        max_retries_per_key = 2
+        for _ in range(len(self.keys) * max_retries_per_key):
+            try:
+                key = self.keys[self.current_key_index]
+                self.current_key_index = (self.current_key_index + 1) % len(self.keys) # Rotate to next key for the next call
+
+                genai.configure(api_key=key)
+                safety_settings = [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ]
+                model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
+                
+                response = model.generate_content(prompt_text)
+                if not response.parts:
+                    print(f"    --> Response blocked by API (Key Index: {self.current_key_index-1}). Skipping.")
+                    return None
+                return response.text
+
+            except Exception as e:
+                error_str = str(e)
+                print(f"    --> API Error with Key Index {self.current_key_index-1}: {error_str[:50]}...")
+                if "429" in error_str or "500" in error_str or "504" in error_str:
+                    print("    --> Rotating key and waiting 5 seconds...")
+                    time.sleep(5) # Shorter wait since we are rotating keys
+                    continue
+                else:
+                    return None # Non-retriable error
+        
+        print("    --> All API keys failed after multiple retries. Skipping chunk.")
+        return None
+
+# Initialize a single API manager for the whole pipeline
+gemini_manager = GeminiAPI()
+
+# --- Database Functions (No changes here, but this is the final version) ---
 DB_FILE = os.path.join(os.path.dirname(__file__), '..', 'data', 'question_bank.db')
 
 def get_db_connection():
@@ -13,100 +61,23 @@ def get_db_connection():
     return conn
 
 def setup_database():
-    db_dir = os.path.dirname(DB_FILE)
-    if not os.path.exists(db_dir):
-        os.makedirs(db_dir)
-    
-    if os.path.exists(DB_FILE):
-        print("Database file already exists. Assuming schema is correct.")
-        return
-
-    print("Creating new database and tables...")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE jee_questions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        question_text TEXT NOT NULL,
-        options TEXT,
-        answer TEXT,
-        subject TEXT,
-        topic TEXT,
-        source_file TEXT,
-        source_page INTEGER, -- The correct schema
-        raw_text_chunk TEXT,
-        status TEXT DEFAULT 'unprocessed'
-    );
-    ''')
-    cursor.execute('''
-    CREATE TABLE generated_questions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        original_jee_id INTEGER,
-        target_exam VARCHAR(10),
-        question_text TEXT NOT NULL,
-        options TEXT,
-        correct_answer TEXT,
-        explanation TEXT,
-        validation_status TEXT DEFAULT 'pending',
-        embedding BLOB,
-        FOREIGN KEY(original_jee_id) REFERENCES jee_questions(id)
-    );
-    ''')
-    conn.commit()
-    conn.close()
-    print("Database setup complete.")
-
-# --- Gemini API Functions ---
-# In scripts/utils.py
-
-def get_gemini_response(prompt_text):
-    """
-    Sends a prompt to the Gemini API with relaxed safety settings and robust retry logic.
-    """
-    load_dotenv()
-    api_key = os.getenv('GEMINI_API_KEY')
-    if not api_key or api_key == 'YOUR_API_KEY_HERE':
-        raise ValueError("GEMINI_API_KEY not found or not set in .env file.")
-
-    genai.configure(api_key=api_key)
-
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
-
-    model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
-    
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = model.generate_content(prompt_text)
-            
-            # Check for empty response parts before accessing .text
-            if not response.parts:
-                reason = "Unknown"
-                try:
-                    # Try to get the specific block reason if available
-                    reason = response.prompt_feedback.block_reason
-                except Exception:
-                    pass # Ignore error if block_reason is not available
-                print(f"    --> Response was blocked by API (Reason: {reason}). Skipping page.")
-                return None
-                
-            return response.text
-            
-        except Exception as e:
-            error_str = str(e)
-            # UPGRADED: Now retries on both rate limits and server errors
-            if "429" in error_str or "500" in error_str:
-                wait_time = 60 + attempt * 15 # Increase wait time on subsequent failures
-                print(f"    --> API Error ({error_str[:20]}). Waiting {wait_time}s... (Attempt {attempt + 1}/{max_retries})")
-                time.sleep(wait_time)
-            else:
-                print(f"    --> An unexpected, non-retriable API error occurred: {e}")
-                return None
-    
-    print("    --> Exceeded max retries for API call. Skipping chunk.")
-    return None
+    if not os.path.exists(DB_FILE):
+        print("Creating new database and tables...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+        CREATE TABLE jee_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, question_text TEXT NOT NULL, options TEXT, answer TEXT,
+            subject TEXT, topic TEXT, source_file TEXT, source_page INTEGER, raw_text_chunk TEXT,
+            status TEXT DEFAULT 'unprocessed'
+        );''')
+        cursor.execute('''
+        CREATE TABLE generated_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, original_jee_id INTEGER, target_exam TEXT,
+            question_text TEXT NOT NULL, options TEXT, correct_answer TEXT, explanation TEXT,
+            validation_status TEXT DEFAULT 'pending', embedding BLOB,
+            FOREIGN KEY(original_jee_id) REFERENCES jee_questions(id)
+        );''')
+        conn.commit()
+        conn.close()
+        print("Database setup complete.")
