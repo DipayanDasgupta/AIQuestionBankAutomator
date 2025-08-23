@@ -1,0 +1,42 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>Manual Validation</h2>
+<hr>
+{% if not variant %}
+    <div class="alert alert-success">No questions are currently pending validation.</div>
+{% else %}
+    <div class="card mb-3">
+        <div class="card-header">Original Question (ID: {{ parent.id }}) from {{ parent.source_file }}, Page {{ parent.source_page }}</div>
+        <div class="card-body">
+            <p>{{ parent.question_text }}</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">Generated Variant (ID: {{ variant.id }}) - Difficulty: {{ variant.difficulty }}</div>
+        <div class="card-body">
+            <h5 class="card-title">Question</h5>
+            <p>{{ variant.question_text }}</p>
+            
+            <h5 class="card-title">Options</h5>
+            <ul>
+            {% for option in variant.options | fromjson %}
+                <li>{{ option }}</li>
+            {% endfor %}
+            </ul>
+
+            <p><strong>Correct Answer:</strong> {{ variant.correct_answer }}</p>
+            
+            <h5 class="card-title">Explanation</h5>
+            <p>{{ variant.explanation }}</p>
+        </div>
+        <div class="card-footer">
+            <form action="{{ url_for('submit_validation') }}" method="POST" class="d-inline">
+                <input type="hidden" name="question_id" value="{{ variant.id }}">
+                <button type="submit" name="action" value="approved" class="btn btn-success">Approve</button>
+                <button type="submit" name="action" value="rejected" class="btn btn-danger">Reject</button>
+            </form>
+        </div>
+    </div>
+{% endif %}
+{% endblock %}

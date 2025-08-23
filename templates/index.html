@@ -1,0 +1,128 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>Dashboard & Control Panel</h2>
+<hr>
+<!-- Stats Row with new IDs -->
+<div class="row">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary mb-3">
+            <div class="card-header">Parent Questions</div>
+            <div class="card-body"><h5 class="card-title" id="stat-parents">{{ stats.total_parents }}</h5></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info mb-3">
+            <div class="card-header">Generated Variants</div>
+            <div class="card-body"><h5 class="card-title" id="stat-variants">{{ stats.total_variants }}</h5></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning mb-3">
+            <div class="card-header">Pending Validation</div>
+            <div class="card-body"><h5 class="card-title" id="stat-pending">{{ stats.pending_validation }}</h5></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success mb-3">
+            <div class="card-header">Approved Questions</div>
+            <div class="card-body"><h5 class="card-title" id="stat-approved">{{ stats.approved }}</h5></div>
+        </div>
+    </div>
+</div>
+
+<!-- Controls Row -->
+<h4>Pipeline Controls</h4>
+<div class="card">
+    <div class="card-body">
+        <form id="augmentation-form" class="row g-3 align-items-center">
+            <div class="col-auto">
+                <label for="chapter" class="form-label">Select Chapter to Process:</label>
+            </div>
+            <div class="col-md-6">
+                <select class="form-select" id="chapter" name="chapter">
+                    {% for chapter in chapters %}
+                        <option value="{{ chapter.Subject }}|{{ chapter.Chapter }}">{{ chapter.Subject }} - {{ chapter.Chapter }} (Pages {{ chapter.Start_Page }}-{{ chapter.End_Page }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <button type="submit" id="start-btn" class="btn btn-primary">Start Generation</button>
+            </div>
+            <div class="col-auto">
+                 <button type="button" id="stop-btn" class="btn btn-danger" disabled>Stop Process</button>
+            </div>
+        </form>
+        <hr>
+        <button type="button" id="reset-db-btn" class="btn btn-outline-danger btn-sm">Reset Database</button>
+        <small class="text-muted">This will delete all existing questions and start fresh.</small>
+    </div>
+</div>
+
+<h4 class="mt-4">Process Status</h4>
+<pre id="status-box" class="status-box"><strong>IDLE</strong><br>Ready to start a new process.</pre>
+
+{% endblock %}
+{% block scripts %}
+<script>
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const resetDbBtn = document.getElementById('reset-db-btn');
+    const statusBox = document.getElementById('status-box');
+
+    document.getElementById('augmentation-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        
+        fetch('/start-augmentation', { method: 'POST', body: formData })
+            .then(response => response.json())
+            .then(data => {
+                if(data.status === 'error') alert(data.message);
+            });
+    });
+
+    stopBtn.addEventListener('click', function() {
+        fetch('/stop-process', { method: 'POST' });
+    });
+
+    resetDbBtn.addEventListener('click', function() {
+        if(confirm("Are you sure you want to delete all data and reset the database? This cannot be undone.")) {
+            fetch('/setup-database', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                window.location.reload();
+            });
+        }
+    });
+
+    function pollServer() {
+        // Fetch log status
+        fetch('/status')
+        .then(response => response.json())
+        .then(data => {
+            statusBox.textContent = data.output;
+            statusBox.scrollTop = statusBox.scrollHeight;
+            if (data.running) {
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+            } else {
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+        });
+
+        // Fetch DB stats and update the cards
+        fetch('/get_stats')
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('stat-parents').textContent = data.total_parents;
+            document.getElementById('stat-variants').textContent = data.total_variants;
+            document.getElementById('stat-pending').textContent = data.pending_validation;
+            document.getElementById('stat-approved').textContent = data.approved;
+        });
+    }
+
+    // Poll server every 3 seconds
+    setInterval(pollServer, 3000);
+</script>
+{% endblock %}
