@@ -582,4 +582,4 @@ if __name__ == "__main__":
         print("  --generate-pdf      : Create the final PDF of approved questions using ReportLab.")
         print("  --generate-latex-pdf: Create the final PDF of approved questions using LaTeX.")
         print("  --export-csv        : Create processed CSV files for review.")
-        print("\nExample: python scripts/run_pipeline.py --generate")
+        print("\nExample: python scripts/run_pipeline.py --generate") 
